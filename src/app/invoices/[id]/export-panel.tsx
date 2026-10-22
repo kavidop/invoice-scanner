@@ -1,14 +1,19 @@
 "use client";
 
+import { usePathname, useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { inputClass } from "@/components/fields";
-import type { ExportContext } from "@/lib/invoices/export";
+import type { ExportContext, LineItemChoice } from "@/lib/invoices/export";
 import type { SupplierField } from "@/lib/suppliers/service";
 import { exportAction, type ExportActionResult } from "./actions";
 import { useReviewState } from "./review-state";
 
 const NO_TAX = "__none";
 const NEW_VENDOR = "__new";
+const ZOHO = "Zoho Books";
+
+/** <select> value for a line's item choice. */
+const choiceValue = (c: LineItemChoice) => (c.mode === "item" ? `item:${c.itemId}` : c.mode);
 
 const FIELD_LABELS: Record<SupplierField, string> = {
   name: "Name",
@@ -25,7 +30,9 @@ const heading = "text-sm font-semibold";
 
 export function ExportPanel({ id, context }: { id: string; context: ExportContext }) {
   const { dirty } = useReviewState();
-  const { invoice, local, linked, candidates, taxes, accounts, rates, destination } = context;
+  const { invoice, local, linked, candidates, taxes, accounts, rates, destination, items, lines } = context;
+  const router = useRouter();
+  const pathname = usePathname();
 
   const exactCandidate = candidates.find((c) => c.exact);
   const [vendor, setVendor] = useState(linked?.externalId ?? exactCandidate?.externalId ?? NEW_VENDOR);
@@ -39,6 +46,9 @@ export function ExportPanel({ id, context }: { id: string; context: ExportContex
   const [defaultAccount, setDefaultAccount] = useState(context.defaultAccountId ?? "");
   const [lineAccounts, setLineAccounts] = useState<(string | null)[]>(() => invoice.lineItems.map(() => null));
   const [perLine, setPerLine] = useState(false);
+  const [lineChoices, setLineChoices] = useState<LineItemChoice[]>(() => lines.map((l) => l.suggested));
+  const setLineChoice = (index: number, choice: LineItemChoice) =>
+    setLineChoices((all) => all.map((c, i) => (i === index ? choice : c)));
   const [force, setForce] = useState(false);
   const [result, setResult] = useState<ExportActionResult | null>(null);
   const [exporting, startExport] = useTransition();
@@ -51,6 +61,7 @@ export function ExportPanel({ id, context }: { id: string; context: ExportContex
   const missing = [
     ...rates.filter((r) => !taxChoice[r.key]).map((r) => `a tax for ${r.label}`),
     ...(accountIds.some((a) => !a) ? ["an expense account"] : []),
+    ...(lineChoices.some((c) => c.mode === "new" && !c.name.trim()) ? ["a name for each new item"] : []),
   ];
   const blocked = dirty ? "Save your changes first — export uses the saved version." : missing.length ? `Choose ${missing.join(" and ")}.` : null;
 
@@ -60,7 +71,8 @@ export function ExportPanel({ id, context }: { id: string; context: ExportContex
         await exportAction(id, {
           supplier: { externalId: vendor === NEW_VENDOR ? null : vendor, updateFields, updateExternal },
           taxes: Object.fromEntries(Object.entries(taxChoice).map(([k, v]) => [k, v === NO_TAX ? null : v])),
-          lineAccountIds: accountIds,
+          destination: destination.key,
+          lines: lineChoices.map((item, i) => ({ item, accountId: accountIds[i] })),
           force,
         }),
       );
@@ -76,14 +88,39 @@ export function ExportPanel({ id, context }: { id: string; context: ExportContex
 
   return (
     <section className="flex flex-col gap-4">
-      <h2 className="text-lg font-semibold tracking-tight">Export to {destination.label}</h2>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <h2 className="text-lg font-semibold tracking-tight">Export to {ZOHO}</h2>
+        {context.destinations.length > 1 ? (
+          <select
+            aria-label="Organization"
+            className={`${inputClass} w-auto`}
+            value={destination.key}
+            onChange={(e) => router.push(`${pathname}?org=${encodeURIComponent(e.target.value)}`, { scroll: false })}
+          >
+            {context.destinations.map((d) => (
+              <option key={d.key} value={d.key}>
+                {d.label}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="text-sm text-zinc-500">{destination.label}</span>
+        )}
+        <span className="basis-full text-xs text-zinc-500">
+          {context.matchedBuyer
+            ? `Chosen because the invoice is billed to ΑΦΜ ${invoice.buyer?.taxId}.`
+            : invoice.buyer?.taxId
+              ? `The buyer ΑΦΜ ${invoice.buyer.taxId} doesn't match any organization — check this is the right one.`
+              : "No buyer ΑΦΜ on the invoice — check this is the right organization."}
+        </span>
+      </div>
 
       {lastSuccess && (
         <p className="rounded-md bg-violet-50 px-3 py-2 text-sm text-violet-900 dark:bg-violet-950/50 dark:text-violet-200">
           Exported on <LocalTime date={lastSuccess.createdAt} />.{" "}
           {lastSuccess.externalUrl && (
             <a href={lastSuccess.externalUrl} target="_blank" rel="noreferrer" className="font-medium underline">
-              Open bill in {destination.label} ↗
+              Open bill in {ZOHO} ↗
             </a>
           )}
         </p>
@@ -164,7 +201,7 @@ export function ExportPanel({ id, context }: { id: string; context: ExportContex
         {vendor !== NEW_VENDOR && (
           <label className="mt-2 flex items-start gap-2 text-sm">
             <input type="checkbox" className="mt-1" checked={updateExternal} onChange={(e) => setUpdateExternal(e.target.checked)} />
-            Also update this vendor&apos;s details in {destination.label} from the invoice
+            Also update this vendor&apos;s details in {ZOHO} from the invoice
           </label>
         )}
       </div>
@@ -197,24 +234,31 @@ export function ExportPanel({ id, context }: { id: string; context: ExportContex
         </div>
       </div>
 
-      {/* Accounts */}
+      {/* Products */}
       <div className={card}>
-        <h3 className={heading}>Expense account</h3>
-        <select
-          aria-label="Expense account for all lines"
-          className={`${inputClass} mt-2 ${defaultAccount ? "" : "border-amber-500"}`}
-          value={defaultAccount}
-          onChange={(e) => setDefaultAccount(e.target.value)}
-        >
-          <option value="" disabled>
-            Choose an account…
-          </option>
-          {accounts.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
+        <h3 className={heading}>Products</h3>
+        <p className="mt-1 text-xs text-zinc-500">
+          Each line is matched to an item in {destination.label}. The link to the supplier&apos;s code is remembered,
+          so next time the same product is picked automatically.
+        </p>
+
+        <label className="mt-3 flex flex-col gap-1 text-xs font-medium text-zinc-600 dark:text-zinc-400">
+          Account (for lines without an item, and the purchase account of new items)
+          <select
+            className={`${inputClass} ${defaultAccount ? "" : "border-amber-500"}`}
+            value={defaultAccount}
+            onChange={(e) => setDefaultAccount(e.target.value)}
+          >
+            <option value="" disabled>
+              Choose an account…
             </option>
-          ))}
-        </select>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+        </label>
         {invoice.lineItems.length > 1 && (
           <label className="mt-2 flex items-center gap-2 text-sm">
             <input
@@ -225,32 +269,106 @@ export function ExportPanel({ id, context }: { id: string; context: ExportContex
                 if (!e.target.checked) setLineAccounts(invoice.lineItems.map(() => null));
               }}
             />
-            Choose per line
+            Different account per line
           </label>
         )}
-        {perLine && (
-          <ol className="mt-2 flex flex-col gap-2">
-            {invoice.lineItems.map((line, i) => (
-              <li key={i} className="grid grid-cols-1 gap-1 text-sm sm:grid-cols-[minmax(0,1fr)_14rem] sm:items-center sm:gap-3">
-                <span className="truncate">
-                  {i + 1}. {line.description}
-                </span>
-                <select
-                  aria-label={`Account for line ${i + 1}`}
-                  className={inputClass}
-                  value={lineAccounts[i] ?? defaultAccount}
-                  onChange={(e) => setLineAccounts((all) => all.map((a, j) => (j === i ? e.target.value : a)))}
-                >
-                  {accounts.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-                </select>
+
+        <ol className="mt-3 flex flex-col divide-y divide-zinc-100 dark:divide-zinc-800">
+          {invoice.lineItems.map((line, i) => {
+            const ctx = lines[i];
+            const choice = lineChoices[i];
+            const shown = new Set([ctx.linkedItem?.id, ...ctx.candidates.map((c) => c.id)]);
+            return (
+              <li key={i} className="flex flex-col gap-2 py-3">
+                <div className="flex flex-wrap items-baseline gap-x-2 text-sm">
+                  <span className="text-xs text-zinc-400">{i + 1}.</span>
+                  <span className="min-w-0 flex-1 break-words font-medium">{line.description}</span>
+                  <span className="text-xs text-zinc-500">
+                    {[line.sku && `code ${line.sku}`, `${line.quantity} × ${line.unitPrice}`].filter(Boolean).join(" · ")}
+                  </span>
+                  {ctx.knownProduct && (
+                    <span className="rounded-full bg-zinc-100 px-1.5 text-[11px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
+                      seen before
+                    </span>
+                  )}
+                </div>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                  <select
+                    aria-label={`Item for line ${i + 1}`}
+                    className={inputClass}
+                    value={choiceValue(choice)}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === "new") setLineChoice(i, { mode: "new", ...ctx.newItem });
+                      else if (v === "none") setLineChoice(i, { mode: "none" });
+                      else setLineChoice(i, { mode: "item", itemId: v.slice("item:".length) });
+                    }}
+                  >
+                    {ctx.linkedItem && (
+                      <option value={`item:${ctx.linkedItem.id}`}>
+                        {itemLabel(ctx.linkedItem)} — linked to this product
+                      </option>
+                    )}
+                    {ctx.candidates.map((c) => (
+                      <option key={c.id} value={`item:${c.id}`}>
+                        {itemLabel(c)} — {c.reason === "code" ? "same code" : `${Math.round(c.score * 100)}% name match`}
+                      </option>
+                    ))}
+                    <option value="new">+ Create a new item</option>
+                    <option value="none">No item (text line on the account)</option>
+                    {items.some((it) => !shown.has(it.id)) && (
+                      <optgroup label="All items">
+                        {items
+                          .filter((it) => !shown.has(it.id))
+                          .sort((a, b) => a.name.localeCompare(b.name))
+                          .map((it) => (
+                            <option key={it.id} value={`item:${it.id}`}>
+                              {itemLabel(it)}
+                            </option>
+                          ))}
+                      </optgroup>
+                    )}
+                  </select>
+                  {perLine && (
+                    <select
+                      aria-label={`Account for line ${i + 1}`}
+                      className={`${inputClass} sm:w-48`}
+                      value={lineAccounts[i] ?? defaultAccount}
+                      onChange={(e) => setLineAccounts((all) => all.map((a, j) => (j === i ? e.target.value : a)))}
+                    >
+                      {accounts.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+                {choice.mode === "new" && (
+                  <div className="grid grid-cols-1 gap-2 rounded-md bg-zinc-50 p-2 sm:grid-cols-[minmax(0,1fr)_10rem] dark:bg-zinc-900">
+                    <label className="flex flex-col gap-1 text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                      New item name
+                      <input
+                        className={`${inputClass} ${choice.name.trim() ? "" : "border-amber-500"}`}
+                        value={choice.name}
+                        onChange={(e) => setLineChoice(i, { ...choice, name: e.target.value })}
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                      Item code (SKU)
+                      <input
+                        className={inputClass}
+                        value={choice.sku ?? ""}
+                        placeholder="optional"
+                        onChange={(e) => setLineChoice(i, { ...choice, sku: e.target.value || null })}
+                      />
+                    </label>
+                  </div>
+                )}
               </li>
-            ))}
-          </ol>
-        )}
+            );
+          })}
+        </ol>
       </div>
 
       {context.duplicates.length > 0 && (
@@ -277,7 +395,7 @@ export function ExportPanel({ id, context }: { id: string; context: ExportContex
               : "bg-red-50 text-red-800 dark:bg-red-950/50 dark:text-red-300"
           }`}
         >
-          {result.ok ? "Bill created in " + destination.label + ". " : result.error + " "}
+          {result.ok ? `Bill created in ${destination.label}. ` : result.error + " "}
           {resultUrl && (
             <a
               href={resultUrl}
@@ -285,7 +403,7 @@ export function ExportPanel({ id, context }: { id: string; context: ExportContex
               rel="noreferrer"
               className="font-medium underline"
             >
-              Open in {destination.label} ↗
+              Open in {ZOHO} ↗
             </a>
           )}
         </p>
@@ -305,7 +423,7 @@ export function ExportPanel({ id, context }: { id: string; context: ExportContex
           disabled={exporting || !!blocked || (needsForce && !force)}
           className="rounded-md bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50"
         >
-          {exporting ? "Exporting…" : `Create bill in ${destination.label}`}
+          {exporting ? "Exporting…" : `Create bill in ${ZOHO}`}
         </button>
       </div>
 
@@ -341,4 +459,8 @@ function LocalTime({ date, className }: { date: Date; className?: string }) {
       {date.toLocaleString()}
     </time>
   );
+}
+
+function itemLabel(item: { name: string; sku: string | null }) {
+  return item.sku ? `${item.name} [${item.sku}]` : item.name;
 }

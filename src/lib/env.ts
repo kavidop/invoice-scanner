@@ -12,15 +12,41 @@ const EnvSchema = z.object({
 
   UPLOAD_DIR: z.string().default("./uploads"),
 
-  ZOHO_DC: z.string().default("com"),
+  ZOHO_DC: z.string().default("eu"),
   ZOHO_CLIENT_ID: z.string().optional(),
   ZOHO_CLIENT_SECRET: z.string().optional(),
   ZOHO_REFRESH_TOKEN: z.string().optional(),
-  ZOHO_ORGANIZATION_ID: z.string().optional(),
-  /** Default expense account for bill lines; the user can override per invoice/line. */
-  ZOHO_EXPENSE_ACCOUNT_ID: z.string().optional(),
-  /** Contact field for the supplier tax number: vat_reg_no, gst_no, tax_reg_no... */
-  ZOHO_TAX_ID_FIELD: z.string().optional(),
+  /**
+   * The Zoho Books organizations bills can go to, as JSON:
+   * [{"id":"20012345","name":"Alpha Α.Ε.","taxId":"EL800000001"}, ...]
+   * `taxId` (the company's ΑΦΜ) picks the organization from the invoice's buyer.
+   */
+  ZOHO_ORGANIZATIONS: z
+    .string()
+    .transform((value, ctx) => {
+      try {
+        return JSON.parse(value) as unknown;
+      } catch {
+        ctx.addIssue({ code: "custom", message: "ZOHO_ORGANIZATIONS must be JSON" });
+        return z.NEVER;
+      }
+    })
+    .pipe(
+      z.array(
+        z.object({
+          id: z.string().min(1),
+          name: z.string().min(1),
+          taxId: z.string().optional(),
+          /** Account used when no account was remembered for a supplier. */
+          expenseAccountId: z.string().optional(),
+        }),
+      ),
+    )
+    .default([]),
+  /** Contact field for the supplier tax number; vat_reg_no for Greek (EU) organizations. */
+  ZOHO_TAX_ID_FIELD: z.string().default("vat_reg_no"),
+  /** Zoho item type for items created from invoice lines: inventory, purchases, sales_and_purchases. */
+  ZOHO_ITEM_TYPE: z.enum(["inventory", "purchases", "sales_and_purchases"]).default("inventory"),
   /** Use an in-memory fake Zoho Books (export flow without credentials). */
   DESTINATION_MOCK: z.stringbool().default(false),
 });

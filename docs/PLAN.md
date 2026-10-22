@@ -4,6 +4,16 @@ Scan a supplier invoice (PDF/image upload or e-invoice URL), extract it with Gem
 match or create the supplier, let the user review it, then post it as a **bill** to an
 accounting destination. Zoho Books is the default destination.
 
+## Decisions
+
+| Question | Decision |
+|---|---|
+| Country / tax regime | **Greece.** DD/MM dates, `1.234,50` amounts, ΦΠΑ 24/13/6 (17/9/4 islands), ΑΦΜ with or without the `EL` prefix, myDATA ΜΑΡΚ. Zoho on the EU data centre (`ZOHO_DC=eu`), supplier ΑΦΜ in `vat_reg_no`. |
+| Product lines | **Match Zoho items.** Per line: the item linked to this supplier product before, else catalogue matches (same code, or name similarity), else create a new item with a user-edited name and code. The supplier code ↔ Zoho item link is kept in the app (`products`, `product_links`). |
+| Zoho organizations | **Two.** Each is a destination (`zoho-books:<org id>`) with its own vendors, items, taxes and remembered choices. The invoice's buyer ΑΦΜ picks the organization; the user can switch. |
+| Original files | **Google Drive** (Phase 3). |
+| Users / login | **A team**, authenticated by Google IAM in front of Cloud Run (Phase 3). |
+
 ## Stack
 
 | Concern | Choice | Why |
@@ -56,9 +66,13 @@ accounting destination. Zoho Books is the default destination.
 - `invoices` — source info, status (`uploaded → parsed → reviewed → exported | failed`),
   raw `extracted` JSON and user-confirmed `reviewed` JSON.
 - `exports` — one row per push attempt with request/response for audit.
+- `products` — a supplier's product as seen on their invoices: supplier code (when printed) or
+  normalized description, last price/unit, how many invoices it appeared on.
+- `product_links` — product ↔ Zoho item, per organization.
+- `tax_mappings` — remembered rate → Zoho tax, per organization.
 
-Source files: stored in Turso as metadata only; the bytes go to object storage
-(Vercel Blob / S3 / R2 — decide in Phase 1; local `./uploads` in dev).
+Source files: stored in Turso as metadata only; the bytes go to file storage
+(local `./uploads` in dev, Google Drive in production — Phase 3).
 
 ## Zoho Books mapping
 
@@ -128,19 +142,41 @@ fully prevented; local-disk storage won't survive a serverless deploy.
 - `/suppliers` list. `DESTINATION_MOCK=true` gives an in-memory Zoho for trying the flow.
 - Not verified against a live Zoho org yet: the connector is covered by tests with stubbed HTTP only.
 
-**Phase 3 — Hardening & extras**
-- Structured e-invoice parsers (UBL/CII/Peppol, Greek myDATA if needed).
-- Auth (single-user password or Auth.js) — required before deploying.
-- Invoice list/search, re-run extraction, batch upload.
-- Additional connectors (QuickBooks, Xero, webhook) via `Connector`.
-- Deploy to Vercel + Turso; secrets in Vercel env.
+**Phase 2b — Greece, two organizations, products (done)**
+- Extraction prompt for Greek invoices; `buyer` (name, ΑΦΜ) and myDATA `mark` added to the
+  invoice schema and the review form. ΜΑΡΚ goes to the bill's `reference_number`.
+- Name matching transliterates Greek → Latin and drops Greek legal forms (Α.Ε., Ε.Π.Ε., Ι.Κ.Ε., ...),
+  so "ΑΛΦΑ ΧΗΜΙΚΑ Α.Ε." matches "Alfa Chimika S.A.". ΑΦΜ compared without the `EL` prefix.
+- `ZOHO_ORGANIZATIONS` (JSON) lists the organizations with their ΑΦΜ; one Zoho login (refresh
+  token) serves both and its access token is shared.
+- Products step in the export panel (see Decisions). New items are created with the chosen
+  account as purchase account, the vendor as preferred vendor, type `ZOHO_ITEM_TYPE`
+  (default `inventory`, which needs inventory tracking and a stock account in Zoho), and selling
+  price = purchase price as a starting point. Item lines post to the item's own account.
+- `/suppliers/[id]` shows the supplier's products and their Zoho items per organization.
+- Not verified against live Zoho organizations yet (stubbed HTTP tests + in-memory mock only).
+
+**Phase 3 — Deploy on Google Cloud**
+- **Hosting:** Cloud Run (container from `next build` standalone output), region `europe-west1`
+  or `europe-west8`; Turso stays as the database (or a Turso region close to it).
+- **Login:** Cloud Run with IAP (Identity-Aware Proxy) enabled: only members of a Google group
+  get through, no login code in the app. The app reads the verified user from the IAP JWT
+  (`x-goog-iap-jwt-assertion`, audience-checked) and records who reviewed/exported each invoice.
+- **Files:** `GoogleDriveStorage` implementing `FileStorage`: the Cloud Run service account writes
+  originals into a Shared Drive folder (`Invoices/<year>/<supplier>/<number>.pdf`), the DB keeps the
+  Drive file id, the preview streams it through the app so team members don't need Drive access.
+- **Secrets:** Gemini key, Zoho client/refresh token, Turso token in Secret Manager.
+- **Greek e-invoices:** links from Greek e-invoicing providers (the QR/URL on the invoice) are
+  already fetched as HTML/PDF; add direct parsing of myDATA / Peppol BIS (UBL) XML when we see real
+  samples. Credit notes (Πιστωτικό) → Zoho vendor credits.
+- **Extras:** invoice list search/filters, batch upload, background extraction if 10–30 s blocking
+  becomes a problem.
 
 ## Open questions
 
-1. Which country/tax regime are the invoices from? Drives date formats, tax-ID field in Zoho
-   (`vat_reg_no` / `gst_no` / ...) and whether to support local e-invoice formats.
-2. Line items: post as free-text lines against one expense account, or match Zoho **items**
-   (inventory) by SKU/name?
-3. Single Zoho organization, or several (multi-tenant OAuth)?
-4. Where should original files live (Vercel Blob, S3/R2, Google Drive)?
-5. Who uses it — just you, or a team (determines auth)?
+1. Do both organizations have **inventory tracking** enabled in Zoho Books? If not, new items should
+   be created as `purchases` (non-inventory) — set `ZOHO_ITEM_TYPE` accordingly.
+2. Should new items get a selling price, or should it stay equal to cost until someone sets it?
+3. Which Google Shared Drive/folder should hold the originals, and which Google group is the team?
+4. A few real (anonymized) invoices and e-invoice links from your main suppliers, to tune the
+   extraction and the item matching thresholds.

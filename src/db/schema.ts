@@ -57,6 +57,51 @@ export const supplierLinks = sqliteTable(
   (t) => [uniqueIndex("supplier_links_dest_idx").on(t.supplierId, t.destination)],
 );
 
+/**
+ * A supplier's product as it appears on their invoices, identified by the
+ * supplier's own code when printed, otherwise by its normalized description.
+ */
+export const products = sqliteTable(
+  "products",
+  {
+    id: id(),
+    supplierId: text("supplier_id")
+      .notNull()
+      .references(() => suppliers.id, { onDelete: "cascade" }),
+    /** The supplier's product code (SKU) as printed; null when the invoice has none. */
+    supplierCode: text("supplier_code"),
+    description: text("description").notNull(),
+    normalizedDescription: text("normalized_description").notNull(),
+    unit: text("unit"),
+    lastUnitPrice: real("last_unit_price"),
+    currency: text("currency"),
+    timesSeen: integer("times_seen").notNull().default(0),
+    lastInvoiceId: text("last_invoice_id").references(() => invoices.id, { onDelete: "set null" }),
+    ...timestamps,
+  },
+  (t) => [
+    uniqueIndex("products_supplier_code_idx").on(t.supplierId, t.supplierCode),
+    index("products_supplier_description_idx").on(t.supplierId, t.normalizedDescription),
+  ],
+);
+
+/** A supplier product ↔ the item it maps to in a destination organization. */
+export const productLinks = sqliteTable(
+  "product_links",
+  {
+    id: id(),
+    productId: text("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    destination: text("destination").notNull(), // e.g. "zoho-books:20012345"
+    externalItemId: text("external_item_id").notNull(),
+    externalItemName: text("external_item_name").notNull(),
+    externalSku: text("external_sku"),
+    ...timestamps,
+  },
+  (t) => [uniqueIndex("product_links_dest_idx").on(t.productId, t.destination)],
+);
+
 /** Remembered tax rate → destination tax choices, so each rate is mapped once. */
 export const taxMappings = sqliteTable(
   "tax_mappings",
@@ -79,6 +124,8 @@ export const invoices = sqliteTable(
   {
     id: id(),
     status: text("status", { enum: invoiceStatus }).notNull().default("uploaded"),
+    /** Destination organization chosen at export (e.g. "zoho-books:20012345"). */
+    destination: text("destination"),
     sourceKind: text("source_kind", { enum: ["file", "url"] }).notNull(),
     /** Original filename or URL. */
     sourceRef: text("source_ref").notNull(),

@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { connection } from "next/server";
 import { db } from "@/db";
+import { listDestinations } from "@/lib/connectors";
 import { env } from "@/lib/env";
 
 /** Quick check that the dev environment is wired up. */
@@ -15,7 +16,12 @@ export async function GET() {
   }
   return Response.json({
     database,
-    gemini: e.GEMINI_API_KEY ? `configured (${e.GEMINI_MODEL})` : "missing GEMINI_API_KEY",
-    zohoBooks: e.ZOHO_REFRESH_TOKEN && e.ZOHO_ORGANIZATION_ID ? "configured" : "not configured",
+    gemini: e.GEMINI_MOCK ? "mock" : e.GEMINI_API_KEY ? `configured (${e.GEMINI_MODEL})` : "missing GEMINI_API_KEY",
+    zohoBooks: e.DESTINATION_MOCK
+      ? "mock"
+      : e.ZOHO_REFRESH_TOKEN && e.ZOHO_ORGANIZATIONS.length > 0
+        ? "configured"
+        : "not configured",
+    organizations: listDestinations().map((d) => d.label),
   });
 }

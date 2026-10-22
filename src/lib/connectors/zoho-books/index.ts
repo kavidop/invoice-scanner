@@ -8,8 +8,10 @@ import {
   type Connector,
   type ExportResult,
   type ExternalAccount,
+  type ExternalItem,
   type ExternalSupplier,
   type ExternalTax,
+  type NewItem,
 } from "../types";
 import { ZohoClient, type ZohoConfig } from "./client";
 
@@ -24,11 +26,33 @@ type ZohoContact = {
 type ZohoTax = { tax_id: string; tax_name: string; tax_percentage: number; tax_type?: string };
 type ZohoAccount = { account_id: string; account_name: string; account_type: string; is_active?: boolean };
 type ZohoCurrency = { currency_id: string; currency_code: string };
+type ZohoItem = {
+  item_id: string;
+  name: string;
+  sku?: string;
+  unit?: string;
+  purchase_rate?: number;
+  purchase_description?: string;
+  status?: string;
+};
+
+const toItem = (i: ZohoItem): ExternalItem => ({
+  id: i.item_id,
+  name: i.name,
+  sku: i.sku || null,
+  unit: i.unit || null,
+  purchaseRate: i.purchase_rate ?? null,
+  purchaseDescription: i.purchase_description || null,
+});
 
 /** Account types that can carry a purchase bill line. */
 const EXPENSE_ACCOUNT_TYPES = new Set(["expense", "cost_of_goods_sold", "other_expense", "fixed_asset"]);
 
 export type ZohoBooksOptions = ZohoConfig & {
+  /** Organization name, shown in the UI. */
+  organizationName: string;
+  /** Type of items created from invoice lines. */
+  itemType?: "inventory" | "purchases" | "sales_and_purchases";
   /**
    * Contact field holding the supplier's tax number. Depends on the Zoho
    * edition: `vat_reg_no` (EU/UK), `gst_no` (India), `tax_reg_no` (AU/NZ/CA...).
@@ -38,8 +62,8 @@ export type ZohoBooksOptions = ZohoConfig & {
 };
 
 export class ZohoBooksConnector implements Connector {
-  readonly id = "zoho-books";
-  readonly label = "Zoho Books";
+  readonly id: string;
+  readonly label: string;
 
   private readonly client: ZohoClient;
   private cache = new Map<string, { at: number; value: unknown }>();
@@ -49,6 +73,8 @@ export class ZohoBooksConnector implements Connector {
     client?: ZohoClient,
   ) {
     this.client = client ?? new ZohoClient(options);
+    this.id = `zoho-books:${options.organizationId}`;
+    this.label = options.organizationName;
   }
 
   async searchSuppliers(supplier: Supplier): Promise<ExternalSupplier[]> {
@@ -152,6 +178,58 @@ export class ZohoBooksConnector implements Connector {
     });
   }
 
+  listItems(): Promise<ExternalItem[]> {
+    return this.cached("items", async () => {
+      const items: ExternalItem[] = [];
+      // Catalogues are small for this use; cap the walk at 2,000 items.
+      for (let page = 1; page <= 10; page++) {
+        const res = await this.client.request<{ items: ZohoItem[]; page_context?: { has_more_page?: boolean } }>(
+          "GET",
+          "/items",
+          { query: { filter_by: "Status.Active", per_page: "200", page: String(page) } },
+        );
+        items.push(...res.items.map(toItem));
+        if (!res.page_context?.has_more_page) break;
+      }
+      return items;
+    });
+  }
+
+  async createItem(item: NewItem): Promise<ExternalItem> {
+    const type = this.options.itemType ?? "inventory";
+    const payload: Record<string, unknown> = {
+      name: item.name,
+      sku: item.sku ?? undefined,
+      unit: item.unit ?? undefined,
+      item_type: type,
+      product_type: "goods",
+      purchase_rate: item.purchaseRate,
+      purchase_description: item.description,
+      purchase_account_id: item.purchaseAccountId,
+      vendor_id: item.vendorId, // preferred vendor
+      // Zoho requires a selling price; start from cost and let the team adjust it.
+      rate: item.purchaseRate,
+    };
+    if (type === "inventory") payload.inventory_account_id = await this.inventoryAccountId();
+
+    const { item: created } = await this.client.request<{ item: ZohoItem }>("POST", "/items", { json: payload });
+    this.cache.delete("items");
+    return toItem(created);
+  }
+
+  private async inventoryAccountId(): Promise<string> {
+    const accounts = await this.cached("stock-accounts", async () => {
+      const { chartofaccounts } = await this.client.request<{ chartofaccounts: ZohoAccount[] }>(
+        "GET",
+        "/chartofaccounts",
+        { query: { filter_by: "AccountType.Active", per_page: "200" } },
+      );
+      return chartofaccounts.filter((a) => a.account_type === "stock");
+    });
+    if (!accounts[0]) throw new Error(`${this.label} has no inventory (stock) account; enable inventory tracking in Zoho Books`);
+    return accounts[0].account_id;
+  }
+
   async findBill(vendorId: string, billNumber: string): Promise<ExportResult | null> {
     const { bills } = await this.client.request<{ bills: { bill_id: string; bill_number: string }[] }>("GET", "/bills", {
       query: { vendor_id: vendorId, bill_number: billNumber },
@@ -197,6 +275,7 @@ export function buildBillPayload(invoice: Invoice, vendorId: string, mapping: Bi
   return {
     vendor_id: vendorId,
     bill_number: invoice.invoiceNumber,
+    reference_number: invoice.mark ? `ΜΑΡΚ ${invoice.mark}` : undefined,
     date: invoice.issueDate,
     due_date: invoice.dueDate ?? undefined,
     is_inclusive_tax: false,
@@ -209,8 +288,11 @@ export function buildBillPayload(invoice: Invoice, vendorId: string, mapping: Bi
       // folded into the unit rate instead; the line total stays exact.
       const discounted = line.discount && line.quantity ? (line.quantity * line.unitPrice - line.discount) / line.quantity : null;
       const description = [line.sku, line.description].filter(Boolean).join(" — ");
+      const { itemId, accountId } = mapping.lines[i];
       return {
-        account_id: mapping.lineAccountIds[i],
+        // With an item, Zoho posts to the item's own purchase/inventory account.
+        item_id: itemId ?? undefined,
+        account_id: itemId ? undefined : accountId,
         description: line.discount
           ? `${description} (${line.quantity} × ${line.unitPrice} less discount ${line.discount})`
           : description,

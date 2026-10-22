@@ -1,10 +1,10 @@
 import "server-only";
-import { and, count, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, sql } from "drizzle-orm";
 import { db, schema } from "@/db";
 import type { Supplier } from "@/lib/invoice/schema";
 import { normalizeName, normalizeTaxId } from "./normalize";
 
-const { suppliers, supplierLinks, invoices } = schema;
+const { suppliers, supplierLinks, invoices, products } = schema;
 
 export type SupplierRow = typeof suppliers.$inferSelect;
 export type SupplierLinkRow = typeof supplierLinks.$inferSelect;
@@ -128,11 +128,18 @@ export async function listSuppliers() {
   return db()
     .select({
       supplier: suppliers,
-      externalId: supplierLinks.externalId,
       invoiceCount: invoiceCounts.n,
+      linkCount: sql<number>`(select count(*) from ${supplierLinks} where ${supplierLinks.supplierId} = ${suppliers.id})`,
+      productCount: sql<number>`(select count(*) from ${products} where ${products.supplierId} = ${suppliers.id})`,
     })
     .from(suppliers)
-    .leftJoin(supplierLinks, eq(supplierLinks.supplierId, suppliers.id))
     .leftJoin(invoiceCounts, eq(invoiceCounts.supplierId, suppliers.id))
     .orderBy(desc(suppliers.updatedAt));
+}
+
+export async function getSupplier(id: string) {
+  const [row] = await db().select().from(suppliers).where(eq(suppliers.id, id)).limit(1);
+  if (!row) return undefined;
+  const links = await db().select().from(supplierLinks).where(eq(supplierLinks.supplierId, id));
+  return { supplier: row, links };
 }

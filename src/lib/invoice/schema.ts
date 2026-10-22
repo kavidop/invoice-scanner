@@ -45,12 +45,22 @@ export const LineItemSchema = z.object({
   lineTotal: z.number().describe("Line total excluding tax, after discount."),
 });
 
+export const BuyerSchema = z.object({
+  name: z.string().nullable(),
+  taxId: z.string().nullable().describe("Buyer's VAT / ΑΦΜ exactly as printed."),
+});
+
 export const InvoiceSchema = z.object({
-  invoiceNumber: z.string(),
+  invoiceNumber: z.string().describe("Invoice number including series, e.g. \"ΤΔΑ Α-1234\"."),
   issueDate: z.string().describe("ISO 8601 date (YYYY-MM-DD)."),
   dueDate: z.string().nullable().describe("ISO 8601 date (YYYY-MM-DD)."),
   currency: z.string().describe("ISO 4217 code, e.g. EUR, USD."),
   supplier: SupplierSchema,
+  buyer: BuyerSchema.nullable().describe("The company the invoice is billed to (us)."),
+  mark: z
+    .string()
+    .nullable()
+    .describe("Greek myDATA ΜΑΡΚ (unique registration number, 15 digits) if printed."),
   lineItems: z.array(LineItemSchema),
   subtotal: z.number().describe("Total excluding tax."),
   taxTotal: z.number(),
@@ -65,6 +75,7 @@ export const InvoiceSchema = z.object({
 
 export type Tax = z.infer<typeof TaxSchema>;
 export type Supplier = z.infer<typeof SupplierSchema>;
+export type Buyer = z.infer<typeof BuyerSchema>;
 export type LineItem = z.infer<typeof LineItemSchema>;
 export type Invoice = z.infer<typeof InvoiceSchema>;
 

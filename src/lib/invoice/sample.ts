@@ -22,6 +22,8 @@ export const sampleInvoice: Invoice = {
       country: "GR",
     },
   },
+  buyer: { name: "Alpha Trading Α.Ε.", taxId: "EL800000001" },
+  mark: "400001234567890",
   lineItems: [
     {
       description: "A4 copy paper, 80 g/m², box of 5 reams",

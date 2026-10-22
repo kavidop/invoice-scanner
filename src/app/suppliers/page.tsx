@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { connection } from "next/server";
 import { Suspense } from "react";
 import { formatAddress, listSuppliers } from "@/lib/suppliers/service";
@@ -27,8 +28,12 @@ async function SupplierList() {
 
   return (
     <ul className="divide-y divide-zinc-200 overflow-hidden rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
-      {rows.map(({ supplier, externalId, invoiceCount }) => (
-        <li key={supplier.id} className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-center sm:gap-4">
+      {rows.map(({ supplier, linkCount, invoiceCount, productCount }) => (
+        <li key={supplier.id}>
+          <Link
+            href={`/suppliers/${supplier.id}`}
+            className="flex flex-col gap-1 px-4 py-3 hover:bg-zinc-50 sm:flex-row sm:items-center sm:gap-4 dark:hover:bg-zinc-900"
+          >
           <div className="min-w-0 flex-1">
             <p className="truncate font-medium">{supplier.name}</p>
             <p className="truncate text-xs text-zinc-500">
@@ -39,10 +44,14 @@ async function SupplierList() {
             <span>
               {invoiceCount ?? 0} invoice{invoiceCount === 1 ? "" : "s"}
             </span>
-            <span className={externalId ? "text-emerald-700 dark:text-emerald-400" : ""}>
-              {externalId ? `Zoho vendor ${externalId}` : "Not linked to Zoho"}
+            <span>
+              {productCount} product{productCount === 1 ? "" : "s"}
+            </span>
+            <span className={linkCount ? "text-emerald-700 dark:text-emerald-400" : ""}>
+              {linkCount ? `Linked in ${linkCount} organization${linkCount === 1 ? "" : "s"}` : "Not linked to Zoho"}
             </span>
           </div>
+          </Link>
         </li>
       ))}
     </ul>

@@ -5,10 +5,10 @@ import { ExportPanel } from "./export-panel";
 export const exportCard = "min-w-0 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800";
 
 /** Server part of the export step: talks to the destination, then hands off to the panel. */
-export async function ExportSection({ id }: { id: string }) {
+export async function ExportSection({ id, destination }: { id: string; destination?: string }) {
   let context: ExportContext | null;
   try {
-    context = await getExportContext(id);
+    context = await getExportContext(id, destination);
   } catch (err) {
     const notConfigured = err instanceof ConnectorNotConfiguredError;
     return (
@@ -37,5 +37,6 @@ export async function ExportSection({ id }: { id: string }) {
     );
   }
 
-  return <ExportPanel id={id} context={context} />;
+  // Keyed by organization so switching resets choices that belong to the other one.
+  return <ExportPanel key={context.destination.key} id={id} context={context} />;
 }

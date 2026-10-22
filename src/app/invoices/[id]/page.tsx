@@ -25,7 +25,7 @@ async function InvoiceDetail({ params, searchParams }: Pick<PageProps<"/invoices
   if (!z.uuid().safeParse(id).success) notFound();
   const row = await getInvoice(id);
   if (!row) notFound();
-  const { duplicate } = await searchParams;
+  const { duplicate, org } = await searchParams;
   const data = row.reviewed ?? row.extracted;
 
   return (
@@ -82,7 +82,7 @@ async function InvoiceDetail({ params, searchParams }: Pick<PageProps<"/invoices
                   </section>
                 }
               >
-                <ExportSection id={row.id} />
+                <ExportSection id={row.id} destination={typeof org === "string" ? org : undefined} />
               </Suspense>
             )}
           </div>

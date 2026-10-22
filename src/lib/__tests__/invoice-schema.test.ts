@@ -15,6 +15,8 @@ const invoice: Invoice = {
     iban: null,
     address: null,
   },
+  buyer: null,
+  mark: null,
   lineItems: [
     {
       description: "Widget",

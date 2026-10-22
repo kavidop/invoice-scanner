@@ -1,9 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ZohoClient } from "@/lib/connectors/zoho-books/client";
+import { clearZohoTokens, ZohoClient } from "@/lib/connectors/zoho-books/client";
 import { buildBillPayload, ZohoBooksConnector } from "@/lib/connectors/zoho-books";
 import { sampleInvoice } from "@/lib/invoice/sample";
 
-const config = { dc: "eu", clientId: "id", clientSecret: "secret", refreshToken: "refresh", organizationId: "42" };
+const config = {
+  dc: "eu",
+  clientId: "id",
+  clientSecret: "secret",
+  refreshToken: "refresh",
+  organizationId: "42",
+  organizationName: "Alpha Α.Ε.",
+};
 
 type Call = { url: URL; init: RequestInit };
 
@@ -23,7 +30,10 @@ function stubFetch(routes: Record<string, unknown>) {
   return calls;
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  clearZohoTokens();
+});
 
 describe("ZohoClient", () => {
   it("refreshes the token once and sends the organization id", async () => {
@@ -77,14 +87,80 @@ describe("ZohoBooksConnector", () => {
   it("builds bill lines with accounts, mapped taxes and discounts folded into the rate", () => {
     const payload = buildBillPayload(sampleInvoice, "v1", {
       taxes: { "24": "t24" },
-      lineAccountIds: ["a1", "a2", "a3"],
+      lines: [
+        { itemId: "item-1", accountId: "a1" },
+        { itemId: null, accountId: "a2" },
+        { itemId: null, accountId: "a3" },
+      ],
     });
-    expect(payload).toMatchObject({ vendor_id: "v1", bill_number: "INV-2026-0142", date: "2026-10-15" });
-    expect(payload.line_items[0]).toMatchObject({ account_id: "a1", rate: 24.5, quantity: 10, tax_id: "t24" });
+    expect(payload).toMatchObject({
+      vendor_id: "v1",
+      bill_number: "INV-2026-0142",
+      date: "2026-10-15",
+      reference_number: "ΜΑΡΚ 400001234567890",
+    });
+    // An item line posts to the item's own account.
+    expect(payload.line_items[0]).toMatchObject({ item_id: "item-1", account_id: undefined, rate: 24.5, quantity: 10, tax_id: "t24" });
+    expect(payload.line_items[1]).toMatchObject({ item_id: undefined, account_id: "a2" });
     expect(payload.line_items[0].description).toBe("PAP-A4-80 — A4 copy paper, 80 g/m², box of 5 reams");
     // 3 × 89.90 − 13.49 = 256.21 → 85.4033 per unit
     expect(payload.line_items[1].rate).toBe(85.4033);
     expect(payload.line_items[1].description).toContain("less discount 13.49");
+  });
+
+  it("is keyed and labelled by organization", () => {
+    const c = new ZohoBooksConnector(config);
+    expect([c.id, c.label]).toEqual(["zoho-books:42", "Alpha Α.Ε."]);
+  });
+
+  it("lists items across pages and creates inventory items with a stock account", async () => {
+    let page = 0;
+    const calls = stubFetch({
+      "POST /items": { item: { item_id: "it9", name: "Μεταφορικά", sku: "SHIP" } },
+      "GET /chartofaccounts": {
+        chartofaccounts: [
+          { account_id: "exp", account_name: "Expenses", account_type: "expense" },
+          { account_id: "stk", account_name: "Inventory Asset", account_type: "stock" },
+        ],
+      },
+    });
+    const fetchMock = vi.mocked(fetch);
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = new URL(input as string);
+      if (url.pathname.endsWith("/items") && (init?.method ?? "GET") === "GET") {
+        page++;
+        return Response.json({
+          code: 0,
+          items: [{ item_id: `it${page}`, name: `Item ${page}`, sku: "", purchase_rate: 1 }],
+          page_context: { has_more_page: page < 2 },
+        });
+      }
+      return base(input, init);
+    });
+
+    const connector = new ZohoBooksConnector(config);
+    const items = await connector.listItems();
+    expect(items.map((i) => [i.id, i.sku])).toEqual([["it1", null], ["it2", null]]);
+
+    const created = await connector.createItem({
+      name: "Μεταφορικά",
+      sku: "SHIP",
+      unit: null,
+      purchaseRate: 15,
+      description: "Delivery",
+      purchaseAccountId: "cogs",
+      vendorId: "v1",
+    });
+    expect(created).toMatchObject({ id: "it9", name: "Μεταφορικά", sku: "SHIP" });
+    const body = JSON.parse(calls.find((c) => c.init.method === "POST" && c.url.pathname.endsWith("/items"))!.init.body as string);
+    expect(body).toMatchObject({
+      item_type: "inventory",
+      purchase_rate: 15,
+      purchase_account_id: "cogs",
+      inventory_account_id: "stk",
+      vendor_id: "v1",
+    });
   });
 
   it("uploads the original as a bill attachment", async () => {
@@ -95,7 +171,7 @@ describe("ZohoBooksConnector", () => {
     const result = await new ZohoBooksConnector(config).createBill(
       sampleInvoice,
       "v1",
-      { taxes: {}, lineAccountIds: ["a", "a", "a"] },
+      { taxes: {}, lines: [0, 1, 2].map(() => ({ itemId: null, accountId: "a" })) },
       { data: Buffer.from("%PDF"), mimeType: "application/pdf", filename: "INV.pdf" },
     );
     expect(result).toEqual({ externalId: "b1", externalUrl: "https://books.zoho.eu/app/42#/bills/b1" });

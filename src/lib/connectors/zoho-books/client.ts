@@ -19,13 +19,20 @@ export class ZohoApiError extends Error {
 }
 
 /**
+ * Access tokens per refresh token: one Zoho login serves every organization,
+ * and refreshing is rate limited, so clients for different orgs share it.
+ */
+const tokens = new Map<string, { accessToken: string; expiresAt: number }>();
+
+export function clearZohoTokens() {
+  tokens.clear();
+}
+
+/**
  * Minimal Zoho Books v3 REST client with refresh-token based OAuth.
  * Access tokens live ~1h; we refresh a minute early.
  */
 export class ZohoClient {
-  private accessToken?: string;
-  private expiresAt = 0;
-
   constructor(private readonly config: ZohoConfig) {}
 
   get apiBase() {
@@ -37,7 +44,8 @@ export class ZohoClient {
   }
 
   private async token(): Promise<string> {
-    if (this.accessToken && Date.now() < this.expiresAt - 60_000) return this.accessToken;
+    const cached = tokens.get(this.config.refreshToken);
+    if (cached && Date.now() < cached.expiresAt - 60_000) return cached.accessToken;
 
     const params = new URLSearchParams({
       refresh_token: this.config.refreshToken,
@@ -53,9 +61,11 @@ export class ZohoClient {
     if (!res.ok || !body.access_token) {
       throw new ZohoApiError(`Zoho token refresh failed: ${body.error ?? res.status}`, res.status, body);
     }
-    this.accessToken = body.access_token;
-    this.expiresAt = Date.now() + (body.expires_in ?? 3600) * 1000;
-    return this.accessToken;
+    tokens.set(this.config.refreshToken, {
+      accessToken: body.access_token,
+      expiresAt: Date.now() + (body.expires_in ?? 3600) * 1000,
+    });
+    return body.access_token;
   }
 
   async request<T>(

@@ -152,6 +152,18 @@ export function InvoiceEditor({
             required
             onChange={(v) => set("currency", (v ?? "").toUpperCase().slice(0, 3))}
           />
+          <TextField
+            label="Buyer (billed to)"
+            className="col-span-2"
+            value={invoice.buyer?.name ?? null}
+            onChange={(v) => set("buyer", { name: v, taxId: invoice.buyer?.taxId ?? null })}
+          />
+          <TextField
+            label="Buyer ΑΦΜ"
+            value={invoice.buyer?.taxId ?? null}
+            onChange={(v) => set("buyer", { name: invoice.buyer?.name ?? null, taxId: v })}
+          />
+          <TextField label="myDATA ΜΑΡΚ" value={invoice.mark} onChange={(v) => set("mark", v)} />
         </div>
       </fieldset>
 
