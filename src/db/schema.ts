@@ -68,6 +68,9 @@ export const invoices = sqliteTable(
     /** SHA-256 of the source bytes, used to detect duplicate uploads. */
     sourceHash: text("source_hash"),
     mimeType: text("mime_type"),
+    sizeBytes: integer("size_bytes"),
+    /** Key of the original document in file storage (see src/lib/storage). */
+    storageKey: text("storage_key"),
     supplierId: text("supplier_id").references(() => suppliers.id),
     invoiceNumber: text("invoice_number"),
     issueDate: text("issue_date"),

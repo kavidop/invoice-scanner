@@ -8,6 +8,13 @@
       "when": 1792658085531,
       "tag": "0000_sudden_centennial",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1792659275327,
+      "tag": "0001_greedy_darkhawk",
+      "breakpoints": true
     }
   ]
 }

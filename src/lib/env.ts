@@ -4,9 +4,13 @@ import { z } from "zod";
 const EnvSchema = z.object({
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default("gemini-flash-latest"),
+  /** Return a canned extraction instead of calling Gemini (UI work without an API key). */
+  GEMINI_MOCK: z.stringbool().default(false),
 
   TURSO_DATABASE_URL: z.string().default("file:local.db"),
   TURSO_AUTH_TOKEN: z.string().optional(),
+
+  UPLOAD_DIR: z.string().default("./uploads"),
 
   ZOHO_DC: z.string().default("com"),
   ZOHO_CLIENT_ID: z.string().optional(),

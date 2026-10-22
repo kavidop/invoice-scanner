@@ -99,6 +99,18 @@ export function checkTotals(invoice: Invoice, tolerance = 0.02): ValidationIssue
     });
   }
 
+  const lineTaxes = invoice.lineItems.flatMap((l) => l.taxes);
+  if (lineTaxes.length > 0 && lineTaxes.every((t) => t.amount !== null)) {
+    const taxSum = lineTaxes.reduce((sum, t) => sum + (t.amount ?? 0), 0);
+    // Per-line rounding can drift by a cent per line.
+    if (Math.abs(taxSum - invoice.taxTotal) > tolerance + 0.01 * invoice.lineItems.length) {
+      issues.push({
+        path: "taxTotal",
+        message: `Sum of line taxes is ${taxSum.toFixed(2)}, but tax total is ${invoice.taxTotal}`,
+      });
+    }
+  }
+
   if (!close(invoice.subtotal + invoice.taxTotal, invoice.total)) {
     issues.push({
       path: "total",
@@ -107,4 +119,28 @@ export function checkTotals(invoice: Invoice, tolerance = 0.02): ValidationIssue
   }
 
   return issues;
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/** Line total and tax amounts recomputed from quantity, unit price, discount and rates. */
+export function recalcLine(line: LineItem): LineItem {
+  const lineTotal = round2(line.quantity * line.unitPrice - (line.discount ?? 0));
+  return {
+    ...line,
+    lineTotal,
+    taxes: line.taxes.map((t) => (t.rate === null ? t : { ...t, amount: round2((lineTotal * t.rate) / 100) })),
+  };
+}
+
+/** Header totals recomputed from the lines as they are (lines are not changed). */
+export function recalcTotals(invoice: Invoice): Invoice {
+  const subtotal = round2(invoice.lineItems.reduce((sum, l) => sum + l.lineTotal, 0));
+  const taxTotal = round2(
+    invoice.lineItems.reduce(
+      (sum, l) => sum + l.taxes.reduce((s, t) => s + (t.amount ?? (t.rate !== null ? (l.lineTotal * t.rate) / 100 : 0)), 0),
+      0,
+    ),
+  );
+  return { ...invoice, subtotal, taxTotal, total: round2(subtotal + taxTotal) };
 }

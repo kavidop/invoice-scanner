@@ -18,6 +18,9 @@ npm run dev
 
 Open http://localhost:3000 and check http://localhost:3000/api/health.
 
+No Gemini key yet? Set `GEMINI_MOCK=true` in `.env.local` and every upload returns a sample
+extraction (with one deliberately wrong line total), which is enough to work on the UI.
+
 ### Database
 
 Dev uses a local libSQL file (`TURSO_DATABASE_URL=file:local.db`), so no account is needed.
@@ -51,6 +54,9 @@ src/
   db/                     Drizzle schema and client (Turso / libSQL)
   lib/invoice/schema.ts   Canonical Invoice schema (Zod) + totals checks
   lib/gemini/extract.ts   Gemini extraction
+  lib/ingest/             File type detection, URL fetching (SSRF-guarded), HTML reduction
+  lib/invoices/service.ts Ingest → store → extract → review workflow
+  lib/storage/            Original document storage (local disk for now)
   lib/suppliers/          Supplier matching helpers
   lib/connectors/         Destination connectors (Zoho Books default)
 drizzle/                  SQL migrations

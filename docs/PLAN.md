@@ -92,11 +92,23 @@ Next.js scaffold, Turso/Drizzle schema + first migration, Zod invoice schema, Ge
 extraction function, Zoho Books client + connector, supplier name normalization,
 `/api/health`, Vitest.
 
-**Phase 1 — Upload → extract → preview**
-- Upload page (drag & drop + URL field), `POST /api/invoices`, file storage.
-- Run extraction, persist, redirect to preview.
-- Preview page with editable form and totals checks.
-- Fixtures: a handful of real (anonymized) invoices + recorded Gemini outputs for tests.
+**Phase 1 — Upload → extract → preview (done)**
+- Upload page (drag & drop + URL field) and recent-invoices list.
+- `POST /api/invoices`: magic-byte type detection, 14 MB cap, SHA-256 duplicate detection
+  (a failed duplicate is retried), original stored via `FileStorage` (local `./uploads` for now).
+- URL ingest: https only, private/loopback addresses blocked on every redirect hop, size and
+  time limits; PDFs/images are treated as files, HTML is reduced to bare markup, XML passed as text,
+  JS-only pages rejected with a hint to upload the PDF.
+- Extraction runs synchronously in the request; failures are stored on the row with the error.
+- `/invoices/[id]`: original document beside an editable form (invoice, supplier, lines with
+  per-line taxes, totals, notes), live totals checks with one-click recalculation, confidence
+  badge, save (validated server-side into `reviewed`), reset to extracted, re-extract.
+- `GEMINI_MOCK=true` returns a sample extraction so the UI works without an API key.
+- Still to do: a handful of real (anonymized) invoices + recorded Gemini outputs as fixtures.
+
+Known limits to revisit: extraction blocks the request for 10–30 s (move to a background job
+if it becomes a problem); the URL guard checks DNS before fetching, so DNS rebinding is not
+fully prevented; local-disk storage won't survive a serverless deploy.
 
 **Phase 2 — Suppliers & Zoho export**
 - Supplier resolution + diff UI, supplier list page.

@@ -1,6 +1,7 @@
 import "server-only";
 import { GoogleGenAI, createPartFromBase64, type Part } from "@google/genai";
 import { env } from "@/lib/env";
+import { sampleInvoice } from "@/lib/invoice/sample";
 import { InvoiceSchema, invoiceJsonSchema, type Invoice } from "@/lib/invoice/schema";
 
 const SYSTEM_INSTRUCTION = `You extract structured data from supplier invoices (purchase bills).
@@ -13,7 +14,7 @@ const SYSTEM_INSTRUCTION = `You extract structured data from supplier invoices (
 
 export type InvoiceSource =
   | { kind: "file"; data: Buffer; mimeType: string }
-  | { kind: "html"; html: string; url: string };
+  | { kind: "text"; text: string; format: "html" | "xml"; url: string };
 
 let client: GoogleGenAI | undefined;
 function gemini() {
@@ -28,12 +29,18 @@ function toParts(source: InvoiceSource): Part[] {
     case "file":
       // PDFs and images (PNG/JPEG/WEBP/HEIC) are sent inline; fine up to ~20 MB.
       return [createPartFromBase64(source.data.toString("base64"), source.mimeType)];
-    case "html":
-      return [{ text: `Electronic invoice fetched from ${source.url}:\n\n${source.html}` }];
+    case "text":
+      return [
+        { text: `Electronic invoice (${source.format.toUpperCase()}) fetched from ${source.url}:\n\n${source.text}` },
+      ];
   }
 }
 
-export async function extractInvoice(source: InvoiceSource): Promise<Invoice> {
+export type Extraction = { invoice: Invoice; model: string };
+
+export async function extractInvoice(source: InvoiceSource): Promise<Extraction> {
+  if (env().GEMINI_MOCK) return { invoice: structuredClone(sampleInvoice), model: "mock" };
+
   const response = await gemini().models.generateContent({
     model: env().GEMINI_MODEL,
     contents: [{ role: "user", parts: [...toParts(source), { text: "Extract this invoice." }] }],
@@ -47,5 +54,5 @@ export async function extractInvoice(source: InvoiceSource): Promise<Invoice> {
 
   const text = response.text;
   if (!text) throw new Error("Gemini returned an empty response");
-  return InvoiceSchema.parse(JSON.parse(text));
+  return { invoice: InvoiceSchema.parse(JSON.parse(text)), model: response.modelVersion ?? env().GEMINI_MODEL };
 }
