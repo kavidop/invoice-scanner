@@ -20,6 +20,8 @@ Open http://localhost:3000 and check http://localhost:3000/api/health.
 
 No Gemini key yet? Set `GEMINI_MOCK=true` in `.env.local` and every upload returns a sample
 extraction (with one deliberately wrong line total), which is enough to work on the UI.
+No Zoho account yet? `DESTINATION_MOCK=true` swaps in an in-memory Zoho Books with a few
+vendors, taxes and expense accounts, so the export step works end to end.
 
 ### Database
 
@@ -57,7 +59,8 @@ src/
   lib/ingest/             File type detection, URL fetching (SSRF-guarded), HTML reduction
   lib/invoices/service.ts Ingest → store → extract → review workflow
   lib/storage/            Original document storage (local disk for now)
-  lib/suppliers/          Supplier matching helpers
+  lib/invoices/export.ts  Export step: supplier resolution, tax/account mapping, duplicate guard
+  lib/suppliers/          Supplier matching and storage
   lib/connectors/         Destination connectors (Zoho Books default)
 drizzle/                  SQL migrations
 docs/PLAN.md              Plan and roadmap

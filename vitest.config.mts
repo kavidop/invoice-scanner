@@ -18,6 +18,7 @@ export default defineConfig({
       TURSO_DATABASE_URL: ":memory:",
       UPLOAD_DIR: path.join(tmpdir(), `invoice-scanner-test-${process.pid}`),
       GEMINI_MOCK: "true",
+      DESTINATION_MOCK: "true",
     },
   },
 });

@@ -25,6 +25,7 @@ export const suppliers = sqliteTable(
     name: text("name").notNull(),
     /** Lower-cased, punctuation/legal-suffix-stripped name used for fuzzy matching. */
     normalizedName: text("normalized_name").notNull(),
+    /** Stored normalized (see normalizeTaxId) so lookups are exact. */
     taxId: text("tax_id"),
     email: text("email"),
     phone: text("phone"),
@@ -49,9 +50,25 @@ export const supplierLinks = sqliteTable(
       .references(() => suppliers.id, { onDelete: "cascade" }),
     destination: text("destination").notNull(), // e.g. "zoho-books"
     externalId: text("external_id").notNull(),
+    /** Expense account last used for this supplier's bills. */
+    defaultAccountId: text("default_account_id"),
     ...timestamps,
   },
   (t) => [uniqueIndex("supplier_links_dest_idx").on(t.supplierId, t.destination)],
+);
+
+/** Remembered tax rate → destination tax choices, so each rate is mapped once. */
+export const taxMappings = sqliteTable(
+  "tax_mappings",
+  {
+    id: id(),
+    destination: text("destination").notNull(),
+    rateKey: text("rate_key").notNull(),
+    /** Null means "no tax" was chosen for this rate. */
+    externalTaxId: text("external_tax_id"),
+    ...timestamps,
+  },
+  (t) => [uniqueIndex("tax_mappings_dest_rate_idx").on(t.destination, t.rateKey)],
 );
 
 export const invoiceStatus = ["uploaded", "parsed", "reviewed", "exported", "failed"] as const;

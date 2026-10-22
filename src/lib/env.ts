@@ -17,7 +17,12 @@ const EnvSchema = z.object({
   ZOHO_CLIENT_SECRET: z.string().optional(),
   ZOHO_REFRESH_TOKEN: z.string().optional(),
   ZOHO_ORGANIZATION_ID: z.string().optional(),
+  /** Default expense account for bill lines; the user can override per invoice/line. */
   ZOHO_EXPENSE_ACCOUNT_ID: z.string().optional(),
+  /** Contact field for the supplier tax number: vat_reg_no, gst_no, tax_reg_no... */
+  ZOHO_TAX_ID_FIELD: z.string().optional(),
+  /** Use an in-memory fake Zoho Books (export flow without credentials). */
+  DESTINATION_MOCK: z.stringbool().default(false),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

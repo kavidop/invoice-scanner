@@ -64,15 +64,17 @@ Source files: stored in Turso as metadata only; the bytes go to object storage
 
 | Invoice | Zoho Books |
 |---|---|
-| supplier | Contact with `contact_type: vendor` (`/contacts`) |
+| supplier | Contact with `contact_type: vendor` (`/contacts`); tax number in the field named by `ZOHO_TAX_ID_FIELD`, IBAN in notes, currency set on create |
 | invoice | Bill (`POST /bills`) — supplier invoices are bills, not invoices |
-| line item | `line_items[]`: `description`, `quantity`, `rate`, `discount`, `account_id`, `tax_id` |
-| tax rate | Matched to `/settings/taxes` by percentage; unmatched → warn in preview |
-| original file | `POST /bills/{id}/attachment` |
+| line item | `line_items[]`: `description` (SKU — text), `quantity`, `rate`, `unit`, `account_id`, `tax_id`. A line discount is folded into `rate` (Zoho's line discounts depend on an org setting) and noted in the description |
+| tax rate | One tax per line, from its first rate. Suggested from a remembered choice, else matched to `/settings/taxes` by percentage; the user confirms. Lines with several taxes need a Zoho tax group |
+| expense account | Chosen per invoice (optionally per line) from active expense / COGS / other-expense / fixed-asset accounts; remembered per supplier |
+| original file | `POST /bills/{id}/attachment` (PDFs and images only) |
 
 Auth: OAuth 2.0 refresh token from a Zoho **Self Client** (single org) to start;
 move to a proper OAuth redirect flow with tokens stored per org when multi-tenant.
-Scopes: `ZohoBooks.contacts.ALL, ZohoBooks.bills.ALL, ZohoBooks.settings.READ`.
+Scopes: `ZohoBooks.contacts.ALL, ZohoBooks.bills.ALL, ZohoBooks.settings.READ, ZohoBooks.accountants.READ`
+(the last one is for the chart of accounts).
 Data centre (`ZOHO_DC`) must match the account (`com`, `eu`, `in`, `com.au`, ...).
 
 Getting a refresh token:
@@ -110,10 +112,21 @@ Known limits to revisit: extraction blocks the request for 10–30 s (move to a 
 if it becomes a problem); the URL guard checks DNS before fetching, so DNS rebinding is not
 fully prevented; local-disk storage won't survive a serverless deploy.
 
-**Phase 2 — Suppliers & Zoho export**
-- Supplier resolution + diff UI, supplier list page.
-- Export endpoint, tax mapping UI, expense account selection, duplicate guard.
-- Error surfacing from Zoho (validation messages back into the form).
+**Phase 2 — Suppliers & Zoho export (done)**
+- Export panel under the review form (`src/lib/invoices/export.ts`, `export-panel.tsx`), enabled once
+  the review is saved and blocked while there are unsaved edits.
+- Supplier resolution: local by tax ID, then normalized name (a name match with a different tax ID
+  is rejected); field-by-field diff with checkboxes to update the stored supplier.
+- Vendor choice: the linked vendor, or destination search results ranked by normalized name /
+  email, or "create new"; optionally push updated details to the existing vendor.
+- Tax mapping per rate and expense account per invoice/line, both remembered
+  (`tax_mappings`, `supplier_links.default_account_id`).
+- Duplicate guard: same supplier + invoice number already exported here, the invoice itself already
+  exported, or the bill number already in Zoho for that vendor → blocked unless "Export anyway".
+- Every attempt is recorded in `exports` with the request and Zoho's error body; errors are shown
+  in the panel and in the export history.
+- `/suppliers` list. `DESTINATION_MOCK=true` gives an in-memory Zoho for trying the flow.
+- Not verified against a live Zoho org yet: the connector is covered by tests with stubbed HTTP only.
 
 **Phase 3 — Hardening & extras**
 - Structured e-invoice parsers (UBL/CII/Peppol, Greek myDATA if needed).

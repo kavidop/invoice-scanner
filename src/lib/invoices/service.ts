@@ -1,6 +1,6 @@
 import "server-only";
 import { createHash } from "node:crypto";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { db, schema } from "@/db";
 import { extractInvoice, type InvoiceSource } from "@/lib/gemini/extract";
 import { reduceHtml } from "@/lib/ingest/html";
@@ -123,7 +123,12 @@ export async function saveReview(id: string, input: unknown): Promise<Invoice> {
   const invoice = InvoiceSchema.parse(input);
   const result = await db()
     .update(invoices)
-    .set({ status: "reviewed", reviewed: invoice, ...summary(invoice) })
+    // An exported invoice stays exported; re-exporting is an explicit choice.
+    .set({
+      status: sql`CASE WHEN ${invoices.status} = 'exported' THEN 'exported' ELSE 'reviewed' END`,
+      reviewed: invoice,
+      ...summary(invoice),
+    })
     .where(eq(invoices.id, id));
   if (result.rowsAffected === 0) throw new Error(`Invoice ${id} not found`);
   return invoice;

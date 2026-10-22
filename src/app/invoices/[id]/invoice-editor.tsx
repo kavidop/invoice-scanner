@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { NumberField, TextField } from "@/components/fields";
 import { formatMoney } from "@/components/status-badge";
 import {
@@ -13,6 +13,7 @@ import {
 } from "@/lib/invoice/schema";
 import { saveReviewAction } from "./actions";
 import { ReExtractButton } from "./re-extract-button";
+import { useReviewState } from "./review-state";
 
 const emptyLine: LineItem = {
   description: "",
@@ -59,6 +60,8 @@ export function InvoiceEditor({
   const issues = useMemo(() => checkTotals(invoice), [invoice]);
   const flagged = useMemo(() => new Set(issues.map((i) => i.path)), [issues]);
   const dirty = JSON.stringify(invoice) !== JSON.stringify(saved);
+  const { setDirty } = useReviewState();
+  useEffect(() => setDirty(dirty), [dirty, setDirty]);
 
   const set = <K extends keyof Invoice>(key: K, value: Invoice[K]) => setInvoice((inv) => ({ ...inv, [key]: value }));
   const setSupplier = <K extends keyof Supplier>(key: K, value: Supplier[K]) =>
@@ -76,7 +79,7 @@ export function InvoiceEditor({
       const result = await saveReviewAction(id, invoice);
       if (result.ok) {
         setSaved(invoice);
-        setMessage({ ok: true, text: "Saved. This version will be used for export." });
+        setMessage({ ok: true, text: "Saved. This version will be used for export (below)." });
       } else {
         setMessage({ ok: false, text: result.error });
       }

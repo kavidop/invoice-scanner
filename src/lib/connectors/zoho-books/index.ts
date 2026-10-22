@@ -1,7 +1,16 @@
 import "server-only";
 import type { Invoice, Supplier } from "@/lib/invoice/schema";
 import { normalizeName } from "@/lib/suppliers/normalize";
-import type { Attachment, Connector, ExportResult, ExternalSupplier } from "../types";
+import {
+  rateKey,
+  type Attachment,
+  type BillMapping,
+  type Connector,
+  type ExportResult,
+  type ExternalAccount,
+  type ExternalSupplier,
+  type ExternalTax,
+} from "../types";
 import { ZohoClient, type ZohoConfig } from "./client";
 
 type ZohoContact = {
@@ -9,13 +18,23 @@ type ZohoContact = {
   contact_name: string;
   company_name?: string;
   email?: string;
+  currency_code?: string;
 };
 
-type ZohoTax = { tax_id: string; tax_name: string; tax_percentage: number };
+type ZohoTax = { tax_id: string; tax_name: string; tax_percentage: number; tax_type?: string };
+type ZohoAccount = { account_id: string; account_name: string; account_type: string; is_active?: boolean };
+type ZohoCurrency = { currency_id: string; currency_code: string };
+
+/** Account types that can carry a purchase bill line. */
+const EXPENSE_ACCOUNT_TYPES = new Set(["expense", "cost_of_goods_sold", "other_expense", "fixed_asset"]);
 
 export type ZohoBooksOptions = ZohoConfig & {
-  /** Expense account used for bill lines (required by Zoho when no item_id is given). */
-  defaultExpenseAccountId?: string;
+  /**
+   * Contact field holding the supplier's tax number. Depends on the Zoho
+   * edition: `vat_reg_no` (EU/UK), `gst_no` (India), `tax_reg_no` (AU/NZ/CA...).
+   * Unset means the tax ID is not sent.
+   */
+  taxIdField?: string;
 };
 
 export class ZohoBooksConnector implements Connector {
@@ -23,28 +42,46 @@ export class ZohoBooksConnector implements Connector {
   readonly label = "Zoho Books";
 
   private readonly client: ZohoClient;
-  private taxesCache?: ZohoTax[];
+  private cache = new Map<string, { at: number; value: unknown }>();
 
-  constructor(private readonly options: ZohoBooksOptions) {
-    this.client = new ZohoClient(options);
+  constructor(
+    private readonly options: ZohoBooksOptions,
+    client?: ZohoClient,
+  ) {
+    this.client = client ?? new ZohoClient(options);
   }
 
-  async findSupplier(supplier: Supplier): Promise<ExternalSupplier | null> {
-    const { contacts } = await this.client.request<{ contacts: ZohoContact[] }>("GET", "/contacts", {
-      query: { contact_type: "vendor", contact_name_contains: supplier.name },
-    });
+  async searchSuppliers(supplier: Supplier): Promise<ExternalSupplier[]> {
     const target = normalizeName(supplier.name);
-    const match = contacts.find(
-      (c) => normalizeName(c.contact_name) === target || normalizeName(c.company_name ?? "") === target,
-    );
-    return match
-      ? { externalId: match.contact_id, name: match.contact_name, email: match.email ?? null }
-      : null;
+    // Search on the most distinctive word, then rank locally: Zoho's "contains"
+    // is literal, so "Acme S.A." would miss "ACME SA".
+    const term = target.split(" ").sort((a, b) => b.length - a.length)[0] || supplier.name;
+    const { contacts } = await this.client.request<{ contacts: ZohoContact[] }>("GET", "/contacts", {
+      query: { contact_type: "vendor", contact_name_contains: term, per_page: "50" },
+    });
+
+    const score = (c: ZohoContact) => {
+      const names = [c.contact_name, c.company_name ?? ""].map(normalizeName);
+      if (names.includes(target)) return 3;
+      if (supplier.email && c.email?.toLowerCase() === supplier.email.toLowerCase()) return 2;
+      return names.some((n) => n && (n.includes(target) || target.includes(n))) ? 1 : 0;
+    };
+
+    return contacts
+      .map((c) => ({ c, s: score(c) }))
+      .filter(({ s }) => s > 0)
+      .sort((a, b) => b.s - a.s)
+      .map(({ c }) => ({
+        externalId: c.contact_id,
+        name: c.contact_name,
+        email: c.email ?? null,
+        currency: c.currency_code ?? null,
+      }));
   }
 
-  async upsertSupplier(supplier: Supplier, externalId?: string): Promise<string> {
+  async upsertSupplier(supplier: Supplier, options: { externalId?: string; currency?: string }): Promise<string> {
     const a = supplier.address;
-    const payload = {
+    const payload: Record<string, unknown> = {
       contact_name: supplier.name,
       company_name: supplier.name,
       contact_type: "vendor",
@@ -59,44 +96,73 @@ export class ZohoBooksConnector implements Connector {
             country: a.country ?? undefined,
           }
         : undefined,
-      // TODO: tax ID field depends on the org's edition (vat_reg_no, gst_no, tax_reg_no...).
       contact_persons:
         supplier.email || supplier.phone
           ? [{ email: supplier.email ?? undefined, phone: supplier.phone ?? undefined, is_primary_contact: true }]
           : undefined,
     };
+    if (this.options.taxIdField && supplier.taxId) payload[this.options.taxIdField] = supplier.taxId;
+    if (supplier.iban) payload.notes = `IBAN: ${supplier.iban}`;
 
-    const { contact } = externalId
-      ? await this.client.request<{ contact: ZohoContact }>("PUT", `/contacts/${externalId}`, { json: payload })
-      : await this.client.request<{ contact: ZohoContact }>("POST", "/contacts", { json: payload });
+    if (options.externalId) {
+      // Contact persons are managed separately once a contact exists; re-sending
+      // them would create duplicates.
+      delete payload.contact_persons;
+      const { contact } = await this.client.request<{ contact: ZohoContact }>("PUT", `/contacts/${options.externalId}`, {
+        json: payload,
+      });
+      return contact.contact_id;
+    }
+
+    // Currency can only be chosen when the vendor is created.
+    if (options.currency) payload.currency_id = await this.currencyId(options.currency);
+    const { contact } = await this.client.request<{ contact: ZohoContact }>("POST", "/contacts", { json: payload });
     return contact.contact_id;
   }
 
-  async createBill(invoice: Invoice, vendorId: string, attachment?: Attachment): Promise<ExportResult> {
-    const taxes = await this.taxes();
-    const taxIdFor = (rate: number | null) =>
-      rate === null ? undefined : taxes.find((t) => Math.abs(t.tax_percentage - rate) < 0.001)?.tax_id;
+  /** Settings lists change rarely; keep them for a few minutes. */
+  private async cached<T>(key: string, load: () => Promise<T>): Promise<T> {
+    const hit = this.cache.get(key);
+    if (hit && Date.now() - hit.at < 5 * 60_000) return hit.value as T;
+    const value = await load();
+    this.cache.set(key, { at: Date.now(), value });
+    return value;
+  }
 
+  listTaxes(): Promise<ExternalTax[]> {
+    return this.cached("taxes", async () =>
+      (await this.client.request<{ taxes: ZohoTax[] }>("GET", "/settings/taxes")).taxes.map((t) => ({
+        id: t.tax_id,
+        name: t.tax_name,
+        rate: t.tax_percentage,
+      })),
+    );
+  }
+
+  listExpenseAccounts(): Promise<ExternalAccount[]> {
+    return this.cached("accounts", async () => {
+      const { chartofaccounts } = await this.client.request<{ chartofaccounts: ZohoAccount[] }>(
+        "GET",
+        "/chartofaccounts",
+        { query: { filter_by: "AccountType.Active", per_page: "200" } },
+      );
+      return chartofaccounts
+        .filter((a) => EXPENSE_ACCOUNT_TYPES.has(a.account_type) && a.is_active !== false)
+        .map((a) => ({ id: a.account_id, name: a.account_name, type: a.account_type }));
+    });
+  }
+
+  async findBill(vendorId: string, billNumber: string): Promise<ExportResult | null> {
+    const { bills } = await this.client.request<{ bills: { bill_id: string; bill_number: string }[] }>("GET", "/bills", {
+      query: { vendor_id: vendorId, bill_number: billNumber },
+    });
+    const bill = bills.find((b) => b.bill_number === billNumber);
+    return bill ? { externalId: bill.bill_id, externalUrl: this.billUrl(bill.bill_id) } : null;
+  }
+
+  async createBill(invoice: Invoice, vendorId: string, mapping: BillMapping, attachment?: Attachment): Promise<ExportResult> {
     const { bill } = await this.client.request<{ bill: { bill_id: string } }>("POST", "/bills", {
-      json: {
-        vendor_id: vendorId,
-        bill_number: invoice.invoiceNumber,
-        date: invoice.issueDate,
-        due_date: invoice.dueDate ?? undefined,
-        is_inclusive_tax: false,
-        notes: invoice.notes ?? undefined,
-        line_items: invoice.lineItems.map((line) => ({
-          account_id: this.options.defaultExpenseAccountId,
-          name: line.sku ?? undefined,
-          description: line.description,
-          quantity: line.quantity,
-          rate: line.unitPrice,
-          unit: line.unit ?? undefined,
-          discount: line.discount ?? undefined,
-          // Zoho supports one tax (or tax group) per line; compound taxes need a tax group.
-          tax_id: taxIdFor(line.taxes[0]?.rate ?? null),
-        })),
-      },
+      json: buildBillPayload(invoice, vendorId, mapping),
     });
 
     if (attachment) {
@@ -109,11 +175,50 @@ export class ZohoBooksConnector implements Connector {
       await this.client.request("POST", `/bills/${bill.bill_id}/attachment`, { form });
     }
 
-    return { externalId: bill.bill_id, externalUrl: `${this.client.appBase}#/bills/${bill.bill_id}` };
+    return { externalId: bill.bill_id, externalUrl: this.billUrl(bill.bill_id) };
   }
 
-  private async taxes(): Promise<ZohoTax[]> {
-    this.taxesCache ??= (await this.client.request<{ taxes: ZohoTax[] }>("GET", "/settings/taxes")).taxes;
-    return this.taxesCache;
+  private billUrl(billId: string) {
+    return `${this.client.appBase}#/bills/${billId}`;
   }
+
+  private async currencyId(code: string): Promise<string | undefined> {
+    const currencies = await this.cached(
+      "currencies",
+      async () => (await this.client.request<{ currencies: ZohoCurrency[] }>("GET", "/settings/currencies")).currencies,
+    );
+    const id = currencies.find((c) => c.currency_code === code.toUpperCase())?.currency_id;
+    if (!id) throw new Error(`Currency ${code} is not enabled in Zoho Books (Settings → Currencies)`);
+    return id;
+  }
+}
+
+export function buildBillPayload(invoice: Invoice, vendorId: string, mapping: BillMapping) {
+  return {
+    vendor_id: vendorId,
+    bill_number: invoice.invoiceNumber,
+    date: invoice.issueDate,
+    due_date: invoice.dueDate ?? undefined,
+    is_inclusive_tax: false,
+    notes: invoice.notes ?? undefined,
+    line_items: invoice.lineItems.map((line, i) => {
+      // Zoho takes one tax (or tax group) per line; a line with several taxes
+      // needs a tax group in Zoho, mapped from its first rate.
+      const taxId = mapping.taxes[rateKey(line.taxes[0]?.rate ?? null)];
+      // Line-level discounts depend on an org setting in Zoho, so a discount is
+      // folded into the unit rate instead; the line total stays exact.
+      const discounted = line.discount && line.quantity ? (line.quantity * line.unitPrice - line.discount) / line.quantity : null;
+      const description = [line.sku, line.description].filter(Boolean).join(" — ");
+      return {
+        account_id: mapping.lineAccountIds[i],
+        description: line.discount
+          ? `${description} (${line.quantity} × ${line.unitPrice} less discount ${line.discount})`
+          : description,
+        quantity: line.quantity,
+        rate: discounted === null ? line.unitPrice : Math.round(discounted * 10_000) / 10_000,
+        unit: line.unit ?? undefined,
+        tax_id: taxId ?? undefined,
+      };
+    }),
+  };
 }

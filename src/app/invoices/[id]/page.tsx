@@ -5,8 +5,10 @@ import { z } from "zod";
 import { StatusBadge } from "@/components/status-badge";
 import { getInvoice } from "@/lib/invoices/service";
 import { DocumentViewer } from "./document-viewer";
+import { exportCard, ExportSection } from "./export-section";
 import { InvoiceEditor } from "./invoice-editor";
 import { ReExtractButton } from "./re-extract-button";
+import { ReviewStateProvider } from "./review-state";
 
 export default function InvoicePage({ params, searchParams }: PageProps<"/invoices/[id]">) {
   return (
@@ -53,23 +55,38 @@ async function InvoiceDetail({ params, searchParams }: Pick<PageProps<"/invoices
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
         <DocumentViewer id={row.id} mimeType={row.mimeType} sourceRef={row.sourceRef} sourceKind={row.sourceKind} />
-        {data ? (
-          <InvoiceEditor
-            key={row.updatedAt.getTime()}
-            id={row.id}
-            initial={data}
-            extracted={row.extracted}
-            reviewed={row.reviewed !== null}
-            model={row.model}
-          />
-        ) : (
-          row.status !== "failed" && (
-            <div className="flex flex-col items-start gap-3 text-sm text-zinc-600">
-              <p>This invoice hasn&apos;t been extracted yet.</p>
-              <ReExtractButton id={row.id} />
-            </div>
-          )
-        )}
+        <ReviewStateProvider>
+          <div className="flex min-w-0 flex-col gap-8">
+            {data ? (
+              <InvoiceEditor
+                key={row.updatedAt.getTime()}
+                id={row.id}
+                initial={data}
+                extracted={row.extracted}
+                reviewed={row.reviewed !== null}
+                model={row.model}
+              />
+            ) : (
+              row.status !== "failed" && (
+                <div className="flex flex-col items-start gap-3 text-sm text-zinc-600">
+                  <p>This invoice hasn&apos;t been extracted yet.</p>
+                  <ReExtractButton id={row.id} />
+                </div>
+              )
+            )}
+            {data && (
+              <Suspense
+                fallback={
+                  <section className={exportCard}>
+                    <p className="text-sm text-zinc-500">Connecting to Zoho Books…</p>
+                  </section>
+                }
+              >
+                <ExportSection id={row.id} />
+              </Suspense>
+            )}
+          </div>
+        </ReviewStateProvider>
       </div>
     </>
   );

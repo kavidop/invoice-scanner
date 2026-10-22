@@ -30,6 +30,14 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             <Link href="/" className="font-semibold tracking-tight">
               Invoice Scanner
             </Link>
+            <nav className="ml-6 flex gap-4 text-sm text-zinc-600 dark:text-zinc-400">
+              <Link href="/" className="hover:text-zinc-900 dark:hover:text-zinc-100">
+                Invoices
+              </Link>
+              <Link href="/suppliers" className="hover:text-zinc-900 dark:hover:text-zinc-100">
+                Suppliers
+              </Link>
+            </nav>
           </div>
         </header>
         {children}
